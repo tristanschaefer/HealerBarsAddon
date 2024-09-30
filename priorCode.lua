@@ -1,16 +1,28 @@
 local HealerBarsAddon = CreateFrame("Frame")
-local f = CreateFrame("Frame")
+local inspectFrame = CreateFrame("Frame")
 local healerFrames = {}
 local barPositions = {}
 local inspectedSpecs = {}
 local inspectQueue = {}
+local unitGUID = {}
 local inspecting = false
-local inspectedUnits = 0
+local HBAddon_lock = false -- Mutex to lock access to inspecting state
 
--- Event handler
+-- Event handlers
 HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
 HealerBarsAddon:RegisterEvent("UNIT_POWER_UPDATE")
 HealerBarsAddon:RegisterEvent("PLAYER_ENTERING_WORLD")
+HealerBarsAddon:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+
+local function SafeSetInspecting(state)
+    if not HBAddon_lock then
+        HBAddon_lock = true
+        C_Timer.After(0.1, function()
+            inspecting = state
+            HBAddon_lock = false
+        end)
+    end
+end
 
 -- Define healer classes
 local healerClasses = {
@@ -43,12 +55,14 @@ local function UpdateHealerMana(healerUnit)
 
         -- Set bar color based on class color
         local _, class = UnitClass(healerUnit)
-        local classColor = RAID_CLASS_COLORS[class]
-        if classColor then
-            frame:SetStatusBarColor(classColor.r, classColor.g, classColor.b)
-        else
-            -- Default color if classColor is not found
-            frame:SetStatusBarColor(0.5, 0.5, 0.5) -- Gray
+        if class then
+            local classColor = RAID_CLASS_COLORS[class]
+            if classColor then
+                frame:SetStatusBarColor(classColor.r, classColor.g, classColor.b)
+            else
+                -- Default color if classColor is not found
+                frame:SetStatusBarColor(0.5, 0.5, 0.5) -- Gray
+            end
         end
     end
 
@@ -144,10 +158,11 @@ end
 
 -- Function to handle all inspections being completed
 local function OnAllInspectsCompleted()
-    print("all done")
+    SafeSetInspecting(false)
+    inspectQueue = {}  -- Clear the queue
     local index = 1
-    for unit, _ in pairs(inspectedSpecs) do
-        if not healerFrames[unit] then
+    for unit, isHealer in pairs(inspectedSpecs) do
+        if not healerFrames[unit] and isHealer then
             CreateHealerManaBar(unit, index)
             index = index + 1
         end
@@ -157,54 +172,47 @@ end
 -- Function to validate a unit's specialization ID
 local function ValidateSpecID(unit)
     local specID = GetInspectSpecialization(unit)
-    if specID and specID > 0 then  -- Check if specID is valid
-        local _, specName = GetSpecializationInfoByID(specID)
-        -- Add additional specID validation logic here if necessary
-        if healerClasses[specID] then
-            inspectedSpecs[unit] = true
-        else
-            inspectedSpecs[unit] = true
-            RemoveNonHealers(unit)
-        end
+    if not specID or specID <= 0 then
+        return  -- Early exit if specID is invalid
+    end
+    if healerClasses[specID] then
+        inspectedSpecs[unit] = true
+    else
+        inspectedSpecs[unit] = false
+        RemoveNonHealers(unit)
     end
 end
 
--- Function to get specialization by inspecting a party member
-local function InspectUnitRequest(unit)
-    if not UnitExists(unit) then
-        return false
-    end
-
-    local guid = UnitGUID(unit)
-
-    -- Initiate an inspection
-    if CanInspect(unit) then
-        NotifyInspect(unit)
-    end
-end
-
--- Function to start inspecting the next unit in the queue
+-- Function to start processing the inspect queue
 local function ProcessInspectQueue()
+    if inspecting then return end
 
-    if inspecting or #inspectQueue == 0 then return end
-
-    -- Stop processing if all units have been inspected
-    if inspectedUnits >= GetNumGroupMembers() then
+    if #inspectQueue == 0 then
+        OnAllInspectsCompleted()
         return
     end
 
-    inspecting = true
+    SafeSetInspecting(true)
+    inspectFrame:RegisterEvent("INSPECT_READY")
+
     local unit = table.remove(inspectQueue, 1)
-    InspectUnitRequest(unit)
+    if unit and CanInspect(unit) then
+        NotifyInspect(unit)
+        C_Timer.After(0.5, function()
+            SafeSetInspecting(false)
+            ProcessInspectQueue()
+        end)
+    else
+        SafeSetInspecting(false)
+        inspectFrame:UnregisterEvent("INSPECT_READY")
+    end
 end
+
 
 -- Function to scan all group members and queue them for inspection
 local function ScanGroupForHealers()
     local groupType = IsInRaid() and "raid" or "party"
     local numGroupMembers = GetNumGroupMembers()-1
-
-    -- Reset the inspected units counter
-    inspectedUnits = 1
 
     -- Get the player's current specialization index
     local specIndex = GetSpecialization()
@@ -226,57 +234,39 @@ local function ScanGroupForHealers()
         -- Queue up all group members for inspection
         for i = 1, numGroupMembers do
             local unit = groupType .. i  -- "raid1", "raid2", etc.
+            unitGUID[UnitGUID(unit)] = unit
             table.insert(inspectQueue, unit)
         end
-    end
-    -- Start processing the inspect queue
-    ProcessInspectQueue()
-end
-
--- Event handler for INSPECT_READY
-f:RegisterEvent("INSPECT_READY")
-f:SetScript("OnEvent", function(self, event, guid)
-    if event == "INSPECT_READY" then
-        -- Find the corresponding unit for the given GUID
-        local unit
-        for i = 1, GetNumGroupMembers()-1 do
-            local groupType = IsInRaid() and "raid" or "party"
-            local testUnit = groupType .. i
-            if UnitGUID(testUnit) == guid then
-                unit = testUnit
-                break
-            end
-        end
-        print(unit)
-
-        if unit then
-            -- Validate the unit's specialization ID
-            ValidateSpecID(unit)
-        end
-
-        -- Increment the inspected units counter
-        inspectedUnits = inspectedUnits + 1
-
-        -- Check if all units have been inspected
-        if inspectedUnits >= GetNumGroupMembers() then
-            OnAllInspectsCompleted()
-        end
-
-        -- Move to the next unit in the queue
-        inspecting = false
         ProcessInspectQueue()
     end
-end)
+end
 
+-- Event handler for when inspection is complete
+local function OnInspectComplete(self, event, guid)
+    local unit = unitGUID[guid]
+    if unit then
+        ValidateSpecID(unit)
+        SafeSetInspecting(false)  -- Safely reset inspecting
+        ProcessInspectQueue()  -- Process the next unit
+        inspectFrame:UnregisterEvent("INSPECT_READY")  -- Unregister the event
+    end
+end
+
+local lastUpdateTime = 0
+-- Event handler for addon events
 HealerBarsAddon:SetScript("OnEvent", function(self, event, healerUnit, power)
-    if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" or "PLAYER_SPECIALIZATION_CHANGED" then
+    if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" then
         ScanGroupForHealers()
     end
 
     if event == "UNIT_POWER_UPDATE" and power == "MANA" then
+        local currentTime = GetTime()
+        if currentTime - lastUpdateTime < 0.1 then return end  -- Limit to 10 updates per second
+        lastUpdateTime = currentTime
         if healerFrames[healerUnit] then
             UpdateHealerMana(healerUnit)
         end
     end
 end)
 
+inspectFrame:SetScript("OnEvent", OnInspectComplete)
