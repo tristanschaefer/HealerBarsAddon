@@ -1,0 +1,12 @@
+﻿## Interface: 100207
+## Title: HealerBarsAddon
+## IconTexture: Interface\Icons\Inv_misc_book_03
+## Author: Drakwlya
+## Version: 1.0
+## DefaultState: enabled
+## SavedVariables: HealerBarsAddonDB
+## SavedVariablesPerCharacter:
+## X-License: MIT
+
+# Core
+HealerBarsAddon.lua
