@@ -1,0 +1,6 @@
+# Ignore prior code
+priorCode.lua
+
+# Ignore folders
+.idea/
+HMB/

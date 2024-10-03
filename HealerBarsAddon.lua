@@ -2,8 +2,23 @@ local HealerBarsAddon = CreateFrame("Frame")
 local healerFrames = {} -- store healer frames here based on unit name "player", "party1", etc
 local barPositions = {} -- store bar positions here and color
 local healerTable = {} -- store ordering of frame in descending order based on unit name
-
+SLASH_HEALERBARS1 = "/healerbars"  -- This allows you to use /healerbars in-game
+SLASH_HEALERBARS2 = "/hb"           -- Optional: alias for the command
 HealerBarsAddonDB = HealerBarsAddonDB or {}
+
+-- Event handlers
+HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
+HealerBarsAddon:RegisterEvent("UNIT_POWER_UPDATE")
+HealerBarsAddon:RegisterEvent("PLAYER_ENTERING_WORLD")
+HealerBarsAddon:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+
+local function WipeTables()
+    for unit,frame in pairs(healerFrames) do
+        healerFrames[unit]:Hide()
+    end
+    wipe(healerFrames)
+    wipe(healerTable)
+end
 
 -- Function to save the bar positions to the saved variable
 local function SaveBarPositions()
@@ -15,12 +30,6 @@ local function SaveBarPositions()
         HealerBarsAddonDB.barPositions = { x = x, y = y }
     end
 end
-
--- Event handlers
-HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
-HealerBarsAddon:RegisterEvent("UNIT_POWER_UPDATE")
-HealerBarsAddon:RegisterEvent("PLAYER_ENTERING_WORLD")
-HealerBarsAddon:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 
 -- Function to update mana for a specific healer
 local function UpdateHealerMana(healerUnit)
@@ -34,10 +43,13 @@ local function UpdateHealerMana(healerUnit)
 
         -- Update mana value
         frame:SetValue(mana)
-
+        local healerName = UnitName(healerUnit)
+        if #healerName > 14 then
+            healerName = string.sub(healerName,1,14)
+        end
         -- Update text with current mana percentage
         if frame.text then
-            frame.text:SetText(string.format("%s - %d%%", UnitName(healerUnit), manaPercent))
+            frame.text:SetText(string.format("%s - %d%%", healerName, manaPercent))
         end
 
         -- Set bar color based on class color
@@ -57,13 +69,25 @@ end
 
 -- Function to create a new progress bar for a healer
 local function CreateHealerManaBar(healerUnit, healerIndex)
+    -- Avoid overflow if raid has too many healers
+    if healerIndex > 10 then
+        return
+    end
     local frame = CreateFrame("StatusBar", nil, UIParent)
-    frame:SetSize(200, 40)
+    frame:SetSize(185, 35)
     frame:SetFrameStrata("MEDIUM")
     frame:SetFrameLevel(2)
+    -- Create background texture
+    local background = frame:CreateTexture(nil, "BACKGROUND")
+    background:SetAllPoints(frame)
+    background:SetColorTexture(0, 0, 0)  -- Black background
 
-    -- Set position relative to the previous frame
-    --frame:SetPoint("TOPLEFT", previousFrame, "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
+    -- Set clean bar style
+    frame:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+    frame:GetStatusBarTexture():SetHorizTile(false)
+    frame:SetMinMaxValues(0, UnitPowerMax(healerUnit, 0))
+    frame:SetValue(UnitPower(healerUnit, 0))
+
     if healerIndex == 0 then
         -- Enable frame dragging
         frame:SetMovable(true)
@@ -76,7 +100,6 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
         else
             frame:SetPoint("TOPLEFT", 20, -20)  -- Default position if not saved
         end
-
         frame:SetScript("OnDragStart", function(self)
             self:StartMoving()
         end)
@@ -89,24 +112,13 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
             SaveBarPositions()          -- Call the function to save positions
         end)
     else
-        local previousUnit = healerTable[healerIndex-1]
+        local previousUnit = healerTable[healerIndex]
         if healerFrames[previousUnit] then
             frame:SetPoint("TOPLEFT", healerFrames[previousUnit], "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
         else
             frame:SetPoint("TOPLEFT", 20, -20)  -- Default position if not saved
         end
     end
-
-    -- Create background texture
-    local background = frame:CreateTexture(nil, "BACKGROUND")
-    background:SetAllPoints(frame)
-    background:SetColorTexture(0, 0, 0)  -- Black background
-
-    -- Set clean bar style
-    frame:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-    frame:GetStatusBarTexture():SetHorizTile(false)
-    frame:SetMinMaxValues(0, UnitPowerMax(healerUnit, 0))
-    frame:SetValue(UnitPower(healerUnit, 0))
 
     -- Add healer's name and class color
     local healerName = UnitName(healerUnit)
@@ -125,12 +137,6 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
         -- Set bar color based on class color
         if classColor then
             frame:SetStatusBarColor(classColor.r, classColor.g, classColor.b)
-        end
-
-        -- Restore position and color if available
-        if barPositions[healerUnit] then
-            frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", barPositions[healerUnit].x, barPositions[healerUnit].y)
-            frame:SetStatusBarColor(unpack(barPositions[healerUnit].color))
         end
 
         -- Create an icon for the healer's class
@@ -160,11 +166,6 @@ local function RemoveNonHealer(healerUnit)
     if healerFrames[healerUnit] then
         healerFrames[healerUnit]:Hide()
         healerFrames[healerUnit] = nil  -- This will remove the key-value pair from the table
-        for index = #healerTable, 1, -1 do
-            if healerTable[index] == healerUnit then
-                table.remove(healerTable,index)
-            end
-        end
     end
 end
 
@@ -191,8 +192,12 @@ local function CheckIfHealer(unit)
 end
 
 local function PopulateHealerManaBars()
-    for index, healerUnit in pairs(healerTable) do
-        CreateHealerManaBar(healerUnit, index)
+    for index = 1, #healerTable do
+        -- Create only up to 10
+        if index <= 10 then
+            local healerUnit = healerTable[index]
+            CreateHealerManaBar(healerUnit, index - 1)
+        end
     end
 end
 
@@ -200,13 +205,11 @@ end
 local function ScanGroupForHealers()
     local groupType = IsInRaid() and "raid" or "party"
     local numGroupMembers = GetNumGroupMembers()-1
-    local index = 0
 
     wipe(healerTable)
 
     if CheckIfHealer("player") then
-        table.insert(healerTable,index,"player")
-        index = index + 1
+        table.insert(healerTable,"player")
     end
 
     if numGroupMembers > 0 then
@@ -214,19 +217,42 @@ local function ScanGroupForHealers()
         for i = 1, numGroupMembers do
             local unit = groupType .. i  -- "raid1", "raid2", etc.
             if CheckIfHealer(unit) then
-                table.insert(healerTable,index,unit)
-                index = index + 1
+                table.insert(healerTable,unit)
             end
         end
     end
 end
 
+local function InitializeHealerManaBars()
+    WipeTables() -- Call the wipe function to reset frames
+    ScanGroupForHealers() -- scans for healers and adds to healerTable
+    PopulateHealerManaBars() -- creates the mana bars for healers
+end
+
+-- Localize the command handler function
+local function HealerBarsCommandHandler(msg)
+    if msg == "reset" then
+        HealerBarsAddonDB = {}
+        InitializeHealerManaBars()
+    elseif msg == "show" then
+        InitializeHealerManaBars()
+    elseif msg == "hide" then
+        for unit, frame in pairs(healerFrames) do
+            frame:Hide() -- Hide all healer frames
+        end
+    else
+        print("Usage: /healerbars [reset | show | hide ]")
+        print("Usage: /hb [reset | show | hide]")
+    end
+end
+
+-- Register the command handler
+SlashCmdList["HEALERBARS"] = HealerBarsCommandHandler
 
 -- Event handler for addon events
 HealerBarsAddon:SetScript("OnEvent", function(self, event, healerUnit, power)
     if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" then
-        ScanGroupForHealers() -- scans for healers and adds to healerTable
-        PopulateHealerManaBars() -- creates the mana bars for healers
+        InitializeHealerManaBars()
     elseif event == "UNIT_POWER_UPDATE" and power == "MANA" then
         if healerFrames[healerUnit] then
             UpdateHealerMana(healerUnit)
