@@ -2,9 +2,11 @@ local HealerBarsAddon = CreateFrame("Frame")
 local healerFrames = {} -- store healer frames here based on unit name "player", "party1", etc
 local barPositions = {} -- store bar positions here and color
 local healerTable = {} -- store ordering of frame in descending order based on unit name
+local healerBarHide = false
 SLASH_HEALERBARS1 = "/healerbars"  -- This allows you to use /healerbars in-game
 SLASH_HEALERBARS2 = "/hb"           -- Optional: alias for the command
 HealerBarsAddonDB = HealerBarsAddonDB or {}
+
 
 -- Event handlers
 HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -235,8 +237,10 @@ local function HealerBarsCommandHandler(msg)
         HealerBarsAddonDB = {}
         InitializeHealerManaBars()
     elseif msg == "show" then
+        healerBarHide = false
         InitializeHealerManaBars()
     elseif msg == "hide" then
+        healerBarHide = true
         for unit, frame in pairs(healerFrames) do
             frame:Hide() -- Hide all healer frames
         end
@@ -252,7 +256,9 @@ SlashCmdList["HEALERBARS"] = HealerBarsCommandHandler
 -- Event handler for addon events
 HealerBarsAddon:SetScript("OnEvent", function(self, event, healerUnit, power)
     if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" then
-        InitializeHealerManaBars()
+        if healerBarHide == false then
+            InitializeHealerManaBars()
+        end
     elseif event == "UNIT_POWER_UPDATE" and power == "MANA" then
         if healerFrames[healerUnit] then
             UpdateHealerMana(healerUnit)
