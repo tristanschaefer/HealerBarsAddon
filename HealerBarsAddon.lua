@@ -1,64 +1,26 @@
 local HealerBarsAddon = CreateFrame("Frame")
-local inspectFrame = CreateFrame("Frame")
-local healerFrames = {}
-local barPositions = {}
-local inspectedSpecs = {}
-local inspectQueue = {}
-local unitGUID = {}
-local inspecting = false
-local HBAddon_lock = false -- Mutex to lock access to inspecting state
--- Global variable to track the previous frame
-local previousFrame = nil
+local healerFrames = {} -- store healer frames here based on unit name "player", "party1", etc
+local barPositions = {} -- store bar positions here and color
+local healerTable = {} -- store ordering of frame in descending order based on unit name
+
 HealerBarsAddonDB = HealerBarsAddonDB or {}
-local savedBarPositions = HealerBarsAddonDB.barPositions or {}
 
 -- Function to save the bar positions to the saved variable
 local function SaveBarPositions()
+    -- Clear the previous saved positions
+    HealerBarsAddonDB.barPositions = {}
+
     for unit, frame in pairs(healerFrames) do
         local x, y = frame:GetCenter()
-        savedBarPositions[unit] = { x = x, y = y, color = { frame:GetStatusBarColor() } }
-    end
-    HealerBarsAddonDB.barPositions = savedBarPositions
-end
-
--- Restore positions when the addon is loaded
-local function RestoreBarPositions()
-    for unit, position in pairs(savedBarPositions) do
-        if healerFrames[unit] then
-            local frame = healerFrames[unit]
-            frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", position.x, position.y)
-            frame:SetStatusBarColor(unpack(position.color))
-        end
+        HealerBarsAddonDB.barPositions = { x = x, y = y }
     end
 end
-
 
 -- Event handlers
 HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
 HealerBarsAddon:RegisterEvent("UNIT_POWER_UPDATE")
 HealerBarsAddon:RegisterEvent("PLAYER_ENTERING_WORLD")
 HealerBarsAddon:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-
-local function SafeSetInspecting(state)
-    if not HBAddon_lock then
-        HBAddon_lock = true
-        C_Timer.After(0.1, function()
-            inspecting = state
-            HBAddon_lock = false
-        end)
-    end
-end
-
--- Define healer classes
-local healerClasses = {
-    [105] = true, -- rdruid
-    [65] = true, -- hpal
-    [256] = true, -- disc
-    [257] = true, -- hpriest
-    [270] = true, -- mw monk
-    [264] = true, -- rsham
-    [1468] = true -- pres evok
-}
 
 -- Function to update mana for a specific healer
 local function UpdateHealerMana(healerUnit)
@@ -92,23 +54,48 @@ local function UpdateHealerMana(healerUnit)
     end
 
 end
--- Global variable to track the previous frame
-local previousFrame = nil
 
 -- Function to create a new progress bar for a healer
 local function CreateHealerManaBar(healerUnit, healerIndex)
     local frame = CreateFrame("StatusBar", nil, UIParent)
     frame:SetSize(200, 40)
-
-    -- Set position relative to the previous frame
-    if previousFrame then
-        frame:SetPoint("TOPLEFT", previousFrame, "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
-    else
-        frame:SetPoint("TOPLEFT", 20, -20)  -- Initial position for the first frame
-    end
-
     frame:SetFrameStrata("MEDIUM")
     frame:SetFrameLevel(2)
+
+    -- Set position relative to the previous frame
+    --frame:SetPoint("TOPLEFT", previousFrame, "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
+    if healerIndex == 0 then
+        -- Enable frame dragging
+        frame:SetMovable(true)
+        frame:EnableMouse(true)
+        frame:RegisterForDrag("LeftButton")
+        if HealerBarsAddonDB.barPositions then
+            local position = HealerBarsAddonDB.barPositions
+            local x, y = position.x, position.y
+            frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+        else
+            frame:SetPoint("TOPLEFT", 20, -20)  -- Default position if not saved
+        end
+
+        frame:SetScript("OnDragStart", function(self)
+            self:StartMoving()
+        end)
+
+        frame:SetScript("OnDragStop", function(self)
+            self:StopMovingOrSizing()
+            -- Save position and color after moving
+            local x, y = self:GetCenter()
+            barPositions[healerUnit] = {x = x, y = y, color = {frame:GetStatusBarColor()}}
+            SaveBarPositions()          -- Call the function to save positions
+        end)
+    else
+        local previousUnit = healerTable[healerIndex-1]
+        if healerFrames[previousUnit] then
+            frame:SetPoint("TOPLEFT", healerFrames[previousUnit], "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
+        else
+            frame:SetPoint("TOPLEFT", 20, -20)  -- Default position if not saved
+        end
+    end
 
     -- Create background texture
     local background = frame:CreateTexture(nil, "BACKGROUND")
@@ -140,26 +127,6 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
             frame:SetStatusBarColor(classColor.r, classColor.g, classColor.b)
         end
 
-        -- There might be a way to add each frame into a table
-        -- Once added to a table, then we can pop things out when they are no longer healer units
-        -- Using a function, we can update the frames with the following so that way the top frame
-        -- only can be dragged and pull all descending frames with it
-        if not previousFrame then
-            -- Enable frame dragging
-            frame:SetMovable(true)
-            frame:EnableMouse(true)
-            frame:RegisterForDrag("LeftButton")
-            frame:SetScript("OnDragStart", function(self)
-                self:StartMoving()
-            end)
-            frame:SetScript("OnDragStop", function(self)
-                self:StopMovingOrSizing()
-                -- Save position and color after moving
-                local x, y = self:GetCenter()
-                barPositions[healerUnit] = {x = x, y = y, color = {frame:GetStatusBarColor()}}
-            end)
-        end
-
         -- Restore position and color if available
         if barPositions[healerUnit] then
             frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", barPositions[healerUnit].x, barPositions[healerUnit].y)
@@ -186,143 +153,83 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
         UpdateHealerMana(healerUnit)
     end
 
-    -- Store the frame as the previous frame for the next one to attach to
-    previousFrame = frame
-end
-
-
--- Function to reorganize the healer mana bars
-local function ReorganizeHealerBars()
-    local index = 1
-    for unit, frame in pairs(healerFrames) do
-        frame:SetPoint("TOPLEFT", 20, -20 * index)  -- Position based on index
-        index = index + 1
-    end
 end
 
 -- Function to remove frames that aren't relevant
-local function RemoveNonHealers(healerUnit)
+local function RemoveNonHealer(healerUnit)
     if healerFrames[healerUnit] then
         healerFrames[healerUnit]:Hide()
         healerFrames[healerUnit] = nil  -- This will remove the key-value pair from the table
-        ReorganizeHealerBars()  -- Call to reorganize bars after removing
-    end
-end
-
--- Function to handle all inspections being completed
-local function OnAllInspectsCompleted()
-    SafeSetInspecting(false)
-    inspectQueue = {}  -- Clear the queue
-    local index = 1
-    for unit, isHealer in pairs(inspectedSpecs) do
-        if not healerFrames[unit] and isHealer then
-            CreateHealerManaBar(unit, index)
-            index = index + 1
+        for index = #healerTable, 1, -1 do
+            if healerTable[index] == healerUnit then
+                table.remove(healerTable,index)
+            end
         end
     end
-    RestoreBarPositions()
-    SaveBarPositions()
 end
 
--- Function to validate a unit's specialization ID
-local function ValidateSpecID(unit)
-    local specID = GetInspectSpecialization(unit)
-    if not specID or specID <= 0 then
-        return  -- Early exit if specID is invalid
-    end
-    if healerClasses[specID] then
-        inspectedSpecs[unit] = true
+-- Function to verify input healer
+local function CheckIfHealer(unit)
+    if unit == "player" then
+        local specIndex = GetSpecialization() -- Get the current specialization index
+        if specIndex then
+            local role = GetSpecializationRole(specIndex) -- Get the role of the current specialization
+            if role == "HEALER" and not healerFrames[unit] then
+                return true
+            else
+                RemoveNonHealer(unit)
+            end
+        end
     else
-        inspectedSpecs[unit] = false
-        RemoveNonHealers(unit)
+        if UnitGroupRolesAssigned(unit) == "HEALER" and not healerFrames[unit] then
+            return true
+        else
+            RemoveNonHealer(unit)
+        end
     end
+    return false
 end
 
--- Function to start processing the inspect queue
-local function ProcessInspectQueue()
-    if inspecting then return end
-
-    if #inspectQueue == 0 then
-        OnAllInspectsCompleted()
-        return
-    end
-
-    SafeSetInspecting(true)
-    inspectFrame:RegisterEvent("INSPECT_READY")
-
-    local unit = table.remove(inspectQueue, 1)
-    if unit and CanInspect(unit) then
-        NotifyInspect(unit)
-        C_Timer.After(0.5, function()
-            SafeSetInspecting(false)
-            ProcessInspectQueue()
-        end)
-    else
-        SafeSetInspecting(false)
-        inspectFrame:UnregisterEvent("INSPECT_READY")
+local function PopulateHealerManaBars()
+    for index, healerUnit in pairs(healerTable) do
+        CreateHealerManaBar(healerUnit, index)
     end
 end
-
 
 -- Function to scan all group members and queue them for inspection
 local function ScanGroupForHealers()
     local groupType = IsInRaid() and "raid" or "party"
     local numGroupMembers = GetNumGroupMembers()-1
+    local index = 0
 
+    wipe(healerTable)
 
-    -- Get the player's current specialization index
-    local specIndex = GetSpecialization()
-
-    if specIndex then
-        -- Get detailed information for the player's current specialization
-        local specID, specName, _, _, _, role = GetSpecializationInfo(specIndex)
-        if specID and healerClasses[specID] and not inspectedSpecs["player"] then
-            inspectedSpecs["player"] = true
-            CreateHealerManaBar("player", 0)
-        end
-        if not healerClasses[specID] then
-            inspectedSpecs["player"] = false
-            RemoveNonHealers("player")
-        end
+    if CheckIfHealer("player") then
+        table.insert(healerTable,index,"player")
+        index = index + 1
     end
 
     if numGroupMembers > 0 then
         -- Queue up all group members for inspection
         for i = 1, numGroupMembers do
             local unit = groupType .. i  -- "raid1", "raid2", etc.
-            unitGUID[UnitGUID(unit)] = unit
-            table.insert(inspectQueue, unit)
+            if CheckIfHealer(unit) then
+                table.insert(healerTable,index,unit)
+                index = index + 1
+            end
         end
-        ProcessInspectQueue()
     end
 end
 
--- Event handler for when inspection is complete
-local function OnInspectComplete(self, event, guid)
-    local unit = unitGUID[guid]
-    if unit then
-        ValidateSpecID(unit)
-        SafeSetInspecting(false)  -- Safely reset inspecting
-        ProcessInspectQueue()  -- Process the next unit
-        inspectFrame:UnregisterEvent("INSPECT_READY")  -- Unregister the event
-    end
-end
 
-local lastUpdateTime = 0
 -- Event handler for addon events
 HealerBarsAddon:SetScript("OnEvent", function(self, event, healerUnit, power)
     if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_SPECIALIZATION_CHANGED" then
-        ScanGroupForHealers()
-    end
-
-    if event == "UNIT_POWER_UPDATE" and power == "MANA" then
-        local currentTime = GetTime()
-        if currentTime - lastUpdateTime < 0.1 then return end  -- Limit to 10 updates per second
-        lastUpdateTime = currentTime
+        ScanGroupForHealers() -- scans for healers and adds to healerTable
+        PopulateHealerManaBars() -- creates the mana bars for healers
+    elseif event == "UNIT_POWER_UPDATE" and power == "MANA" then
         if healerFrames[healerUnit] then
             UpdateHealerMana(healerUnit)
         end
     end
 end)
-
-inspectFrame:SetScript("OnEvent", OnInspectComplete)

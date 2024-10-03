@@ -7,6 +7,31 @@ local inspectQueue = {}
 local unitGUID = {}
 local inspecting = false
 local HBAddon_lock = false -- Mutex to lock access to inspecting state
+-- Global variable to track the previous frame
+local previousFrame = nil
+HealerBarsAddonDB = HealerBarsAddonDB or {}
+local savedBarPositions = HealerBarsAddonDB.barPositions or {}
+
+-- Function to save the bar positions to the saved variable
+local function SaveBarPositions()
+    for unit, frame in pairs(healerFrames) do
+        local x, y = frame:GetCenter()
+        savedBarPositions[unit] = { x = x, y = y, color = { frame:GetStatusBarColor() } }
+    end
+    HealerBarsAddonDB.barPositions = savedBarPositions
+end
+
+-- Restore positions when the addon is loaded
+local function RestoreBarPositions()
+    for unit, position in pairs(savedBarPositions) do
+        if healerFrames[unit] then
+            local frame = healerFrames[unit]
+            frame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", position.x, position.y)
+            frame:SetStatusBarColor(unpack(position.color))
+        end
+    end
+end
+
 
 -- Event handlers
 HealerBarsAddon:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -67,12 +92,20 @@ local function UpdateHealerMana(healerUnit)
     end
 
 end
+-- Global variable to track the previous frame
+local previousFrame = nil
 
 -- Function to create a new progress bar for a healer
 local function CreateHealerManaBar(healerUnit, healerIndex)
     local frame = CreateFrame("StatusBar", nil, UIParent)
     frame:SetSize(200, 40)
-    frame:SetPoint("TOPLEFT", 20, -20 * healerIndex)
+
+    -- Set position relative to the previous frame
+    if previousFrame then
+        frame:SetPoint("TOPLEFT", previousFrame, "BOTTOMLEFT", 0, -5)  -- Adjust the vertical spacing as needed
+    else
+        frame:SetPoint("TOPLEFT", 20, -20)  -- Initial position for the first frame
+    end
 
     frame:SetFrameStrata("MEDIUM")
     frame:SetFrameLevel(2)
@@ -107,19 +140,25 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
             frame:SetStatusBarColor(classColor.r, classColor.g, classColor.b)
         end
 
-        -- Enable frame dragging
-        frame:SetMovable(true)
-        frame:EnableMouse(true)
-        frame:RegisterForDrag("LeftButton")
-        frame:SetScript("OnDragStart", function(self)
-            self:StartMoving()
-        end)
-        frame:SetScript("OnDragStop", function(self)
-            self:StopMovingOrSizing()
-            -- Save position and color after moving
-            local x, y = self:GetCenter()
-            barPositions[healerUnit] = {x = x, y = y, color = {frame:GetStatusBarColor()}}
-        end)
+        -- There might be a way to add each frame into a table
+        -- Once added to a table, then we can pop things out when they are no longer healer units
+        -- Using a function, we can update the frames with the following so that way the top frame
+        -- only can be dragged and pull all descending frames with it
+        if not previousFrame then
+            -- Enable frame dragging
+            frame:SetMovable(true)
+            frame:EnableMouse(true)
+            frame:RegisterForDrag("LeftButton")
+            frame:SetScript("OnDragStart", function(self)
+                self:StartMoving()
+            end)
+            frame:SetScript("OnDragStop", function(self)
+                self:StopMovingOrSizing()
+                -- Save position and color after moving
+                local x, y = self:GetCenter()
+                barPositions[healerUnit] = {x = x, y = y, color = {frame:GetStatusBarColor()}}
+            end)
+        end
 
         -- Restore position and color if available
         if barPositions[healerUnit] then
@@ -146,6 +185,19 @@ local function CreateHealerManaBar(healerUnit, healerIndex)
         -- Update text with initial mana percentage
         UpdateHealerMana(healerUnit)
     end
+
+    -- Store the frame as the previous frame for the next one to attach to
+    previousFrame = frame
+end
+
+
+-- Function to reorganize the healer mana bars
+local function ReorganizeHealerBars()
+    local index = 1
+    for unit, frame in pairs(healerFrames) do
+        frame:SetPoint("TOPLEFT", 20, -20 * index)  -- Position based on index
+        index = index + 1
+    end
 end
 
 -- Function to remove frames that aren't relevant
@@ -153,6 +205,7 @@ local function RemoveNonHealers(healerUnit)
     if healerFrames[healerUnit] then
         healerFrames[healerUnit]:Hide()
         healerFrames[healerUnit] = nil  -- This will remove the key-value pair from the table
+        ReorganizeHealerBars()  -- Call to reorganize bars after removing
     end
 end
 
@@ -167,6 +220,8 @@ local function OnAllInspectsCompleted()
             index = index + 1
         end
     end
+    RestoreBarPositions()
+    SaveBarPositions()
 end
 
 -- Function to validate a unit's specialization ID
@@ -213,6 +268,7 @@ end
 local function ScanGroupForHealers()
     local groupType = IsInRaid() and "raid" or "party"
     local numGroupMembers = GetNumGroupMembers()-1
+
 
     -- Get the player's current specialization index
     local specIndex = GetSpecialization()
